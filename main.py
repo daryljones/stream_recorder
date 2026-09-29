@@ -8,10 +8,11 @@ import os
 import time
 import json
 import threading
+from bisect import bisect_left
 from typing import Any, Dict
 from flask import Flask, render_template, jsonify, request, send_file
 
-from audio_recorder import AudioRecorder
+from audio_recorder import AudioRecorder, parse_utc_datetime
 # Get the directory where this script is located
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 # Initialize audio recorder with proper paths
@@ -25,8 +26,8 @@ _CHANMINS_CACHE: Dict[str, Any] = {}
 _REFRESH_SEC = int(os.environ.get("STATS_REFRESH_SEC", "30"))
 
 def _generate_stats(recorder: AudioRecorder, base_dir: str) -> Dict[str, Any]:
-    from datetime import date
-    today = date.today().strftime("%Y%m%d")
+    from datetime import datetime, timezone
+    today = datetime.now(timezone.utc).date()
     stats: Dict[str, Any] = {}
     total_recordings = 0
     total_size = 0
@@ -37,6 +38,7 @@ def _generate_stats(recorder: AudioRecorder, base_dir: str) -> Dict[str, Any]:
         channel_count = 0
         channel_size = 0
         channel_today = 0
+        recording_times = []
         if os.path.exists(channel_dir):
             try:
                 with os.scandir(channel_dir) as it:
@@ -48,10 +50,13 @@ def _generate_stats(recorder: AudioRecorder, base_dir: str) -> Dict[str, Any]:
                             continue
                         channel_count += 1
                         try:
-                            channel_size += entry.stat().st_size
+                            stat = entry.stat()
+                            channel_size += stat.st_size
                         except FileNotFoundError:
                             continue
-                        if name.startswith(today):
+                        # Cache file times so client-local day counts need no directory rescan.
+                        recording_times.append(stat.st_mtime)
+                        if datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).date() == today:
                             channel_today += 1
             except FileNotFoundError:
                 pass
@@ -60,6 +65,7 @@ def _generate_stats(recorder: AudioRecorder, base_dir: str) -> Dict[str, Any]:
             "recordings": channel_count,
             "total_size": channel_size,
             "today": channel_today,
+            "_recording_times": sorted(recording_times),
         }
         total_recordings += channel_count
         total_size += channel_size
@@ -247,7 +253,7 @@ def create_app():
             # Import required modules
             import subprocess
             import tempfile
-            from datetime import datetime
+            from datetime import datetime, timezone
             import shutil
 
             # Create temporary directory for processing
@@ -274,7 +280,7 @@ def create_app():
                 if not input_files:
                     return jsonify({"error": "No valid files found"}), 404
                 # Generate output filename with timestamp
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
                 output_filename = f"concatenated_{timestamp}.flac"
                 output_path = os.path.join(temp_dir, output_filename)
                 # Create ffmpeg command for concatenation using concat filter
@@ -308,9 +314,39 @@ def create_app():
     @app.route("/api/stats")
     def get_statistics():
         """Get recording statistics"""
-        if not _STATS_CACHE:
+        cached_stats = _STATS_CACHE
+        if not cached_stats:
             return jsonify({"error": "Stats warming up"}), 503
-        return jsonify(_STATS_CACHE)
+        start_date = request.args.get("start_date")
+        end_date = request.args.get("end_date")
+        start_time = None
+        end_time = None
+        if start_date or end_date:
+            try:
+                if not (start_date and end_date):
+                    raise ValueError("Both day boundaries are required")
+                start_time = parse_utc_datetime(start_date).timestamp()
+                end_time = parse_utc_datetime(end_date).timestamp()
+                if end_time <= start_time:
+                    raise ValueError("End must be after start")
+            except (ValueError, OverflowError):
+                return jsonify({"error": "Provide valid start_date and end_date boundaries"}), 400
+
+        # Copy public values so different browser timezones never alter the shared cache.
+        stats = {}
+        today_recordings = 0
+        for channel_id, values in cached_stats.items():
+            if channel_id == "total":
+                continue
+            channel_stats = {key: value for key, value in values.items() if key != "_recording_times"}
+            if start_time is not None:
+                times = values["_recording_times"]
+                # The next local midnight is exclusive, including on 23/25-hour DST days.
+                channel_stats["today"] = bisect_left(times, end_time) - bisect_left(times, start_time)
+            today_recordings += channel_stats["today"]
+            stats[channel_id] = channel_stats
+        stats["total"] = {**cached_stats["total"], "today": today_recordings}
+        return jsonify(stats)
 
     @app.route("/api/channel-minutes")
     def get_channel_minutes():
@@ -340,16 +376,16 @@ def create_app():
         """Get status of temp files"""
         try:
             import glob
-            from datetime import datetime, timedelta
+            from datetime import datetime, timedelta, timezone
             # Count temp files by age (both mp3 and flac)
             temp_pattern_mp3 = os.path.join(BASE_DIR, "audio_files", "*", "temp_*.mp3")
             temp_pattern_flac = os.path.join(BASE_DIR, "audio_files", "*", "temp_*.flac")
             temp_files = glob.glob(temp_pattern_mp3) + glob.glob(temp_pattern_flac)
-            now = datetime.now()
+            now = datetime.now(timezone.utc)
             counts = {"total": len(temp_files), "less_than_1_hour": 0, "less_than_24_hours": 0, "older_than_24_hours": 0, "orphaned": 0}
             for temp_file in temp_files:
                 try:
-                    file_time = datetime.fromtimestamp(os.path.getmtime(temp_file))
+                    file_time = datetime.fromtimestamp(os.path.getmtime(temp_file), tz=timezone.utc)
                     age = now - file_time
                     if age < timedelta(hours=1):
                         counts["less_than_1_hour"] += 1

@@ -450,7 +450,8 @@
           </div>
           <button onclick="filterRecordings()" class="filter-btn">
             Apply Filter
-          </button> (Times are approximate.)
+          </button>
+          <div class="timezone-info">Filters and recording times use <span id="modalTzDisplay"></span>. Times are approximate.</div>
         </div>
 
         <!-- Batch Selection Controls -->
@@ -487,8 +488,6 @@
     let currentChannelStats = {};
     let currentChannelId = null;
     let currentChannelName = null;
-
-    const LA_TIMEZONE = "America/Los_Angeles";
 
     // ---- sorting helper (new) ----
     function enableTableSorting(table) {
@@ -659,7 +658,7 @@
 
     async function updateTodaysRecordingCount() {
       try {
-        const response = await fetch("/api/stats");
+        const response = await fetch(buildStatsUrl());
         const stats = await response.json();
         if (stats.total && typeof stats.total.today === 'number') {
           document.getElementById("totalRecordings").textContent = stats.total.today;
@@ -699,39 +698,51 @@
     }
 
     function formatDateForInput(date) {
-      return date.toISOString().split("T")[0];
+      // Date inputs need the local calendar day, which can differ from UTC.
+      return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
     }
 
-    
-    // Parse our YYYYMMDD_HHMMSS[_mmm] style timestamps as UTC, return Date in local time zone
-    function parseTimestampToUTC(ts) {
-      if (typeof ts !== 'string') return new Date(ts);
-      const m = ts.match(/^(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})/);
-      if (!m) return new Date(ts);
-      const [_, y, mo, d, h, mi, s] = m;
-      return new Date(Date.UTC(+y, +mo - 1, +d, +h, +mi, +s));
+    function buildStatsUrl() {
+      const now = new Date();
+      // Construct each local midnight separately instead of assuming a 24-hour day.
+      const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      const end = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+      const params = new URLSearchParams({ start_date: start.toISOString(), end_date: end.toISOString() });
+      return `/api/stats?${params}`;
     }
-function formatDateTimeForLA(timestamp) {
+
+    function buildRecordingsUrl(channelId) {
+      const params = new URLSearchParams({ limit: '200' });
+      const startDate = document.getElementById('startDate').value;
+      const endDate = document.getElementById('endDate').value;
+      const startTime = document.getElementById('startTime').value || '00:00';
+      const endTime = document.getElementById('endTime').value || '23:59';
+
+      // Convert each local boundary separately so DST changes use the correct offsets.
+      if (startDate) {
+        params.set('start_date', new Date(`${startDate}T${startTime}`).toISOString());
+      }
+      if (endDate) {
+        const end = new Date(`${endDate}T${endTime}`);
+        end.setSeconds(59, 999);  // Include the full selected end minute.
+        params.set('end_date', end.toISOString());
+      }
+      return `/api/recordings/channel/${encodeURIComponent(channelId)}?${params}`;
+    }
+
+    function formatDateTimeLocal(timestamp) {
       try {
-        let date;
-        if (typeof timestamp === 'string') {
-          if (/^\d{8}_\d{6}/.test(timestamp)) {
-            date = parseTimestampToUTC(timestamp);
-          } else {
-            date = new Date(timestamp);
-          }
-        } else {
-          date = new Date(timestamp);
-        }
+        // Use the API's offset-aware file time; legacy filenames have no timezone.
+        const date = new Date(timestamp);
         if (isNaN(date.getTime())) {
           console.warn('Invalid date:', timestamp);
-          return timestamp;
+          return 'Unknown time';
         }
-        const options = { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false };
+        const options = { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true, timeZoneName: 'short' };
         return date.toLocaleString('en-US', options);
       } catch (e) {
         console.error('Error formatting date:', e, 'timestamp:', timestamp);
-        return timestamp;
+        return 'Unknown time';
       }
     }
 
@@ -740,6 +751,7 @@ function formatDateTimeForLA(timestamp) {
       try {
         const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'Local';
         document.getElementById('tzDisplay').textContent = tz;
+        document.getElementById('modalTzDisplay').textContent = tz;
       } catch (_) { document.getElementById('tzDisplay').textContent = 'Local'; }
     })();
 
@@ -762,7 +774,7 @@ function formatDateTimeForLA(timestamp) {
         const response = await fetch(`/api/recordings?channel=${channelId}&limit=1`);
         const recordings = await response.json();
         if (recordings.length === 0) { return 'None'; }
-        return formatDateTimeForLA(recordings[0].timestamp);
+        return formatDateTimeLocal(recordings[0].modified_time);
       } catch (error) {
         console.error("Error loading latest recording:", error);
         return 'Error';
@@ -771,7 +783,7 @@ function formatDateTimeForLA(timestamp) {
 
     async function loadChannelStats() {
       try {
-        const response = await fetch("/api/stats");
+        const response = await fetch(buildStatsUrl());
         const stats = await response.json();
         currentChannelStats = stats;
       } catch (error) {
@@ -781,7 +793,7 @@ function formatDateTimeForLA(timestamp) {
 
     async function loadStats() {
       try {
-        const response = await fetch("/api/stats");
+        const response = await fetch(buildStatsUrl());
         const stats = await response.json();
 
         const container = document.getElementById("statsContainer");
@@ -833,20 +845,7 @@ function formatDateTimeForLA(timestamp) {
       container.innerHTML = '<div class="loading">Loading recordings...</div>';
 
       try {
-        const startDate = document.getElementById("startDate").value;
-        const endDate = document.getElementById("endDate").value;
-        const startTime = document.getElementById("startTime").value;
-        const endTime = document.getElementById("endTime").value;
-
-        let url = `/api/recordings/channel/${channelId}?limit=200`;
-        if (startDate) {
-          const startDateTime = startTime ? `${startDate}T${startTime}` : startDate;
-          url += `&start_date=${startDateTime}`;
-        }
-        if (endDate) {
-          const endDateTime = endTime ? `${endDate}T${endTime}` : endDate;
-          url += `&end_date=${endDateTime}`;
-        }
+        const url = buildRecordingsUrl(channelId);
 
         const response = await fetch(url);
         if (!response.ok) { throw new Error(`HTTP ${response.status}: ${response.statusText}`); }
@@ -863,8 +862,7 @@ function formatDateTimeForLA(timestamp) {
             const item = document.createElement("div");
             item.className = "recording-item";
 
-            let formattedTime = recording.timestamp || 'Unknown time';
-            try { formattedTime = formatDateTimeForLA(recording.timestamp); } catch (_) {}
+            const formattedTime = formatDateTimeLocal(recording.modified_time);
 
             const duration = recording.duration_ms
               ? `${(recording.duration_ms / 1000).toFixed(1)}s`
@@ -873,11 +871,12 @@ function formatDateTimeForLA(timestamp) {
             item.innerHTML = `
               <input type="checkbox" class="recording-checkbox" 
                      data-filename="${recording.filename}"
-                     data-timestamp="${recording.timestamp}" 
+                     data-timestamp="${recording.modified_time}"
                      onchange="updateBatchControls()">
               <div class="recording-info">
-                <div class="recording-name">${recording.filename}</div>
-                <div class="recording-meta">${formattedTime} • ${duration} • ${formatFileSize(recording.size || 0)}</div>
+                <div class="recording-name">${formattedTime}</div>
+                <div class="recording-meta">File: ${recording.filename}</div>
+                <div class="recording-meta">${duration} • ${formatFileSize(recording.size || 0)}</div>
               </div>
               <div class="recording-actions">
                 <button class="btn-small btn-primary" onclick="playRecording('${recording.filename}', '${channelName}')">Play</button>
@@ -928,20 +927,7 @@ function formatDateTimeForLA(timestamp) {
 
       (async () => {
         try {
-          const startDate = document.getElementById("startDate").value;
-          const endDate = document.getElementById("endDate").value;
-          const startTime = document.getElementById("startTime").value;
-          const endTime = document.getElementById("endTime").value;
-
-          let url = `/api/recordings/channel/${currentChannelId}?limit=200`;
-          if (startDate) {
-            const startDateTime = startTime ? `${startDate}T${startTime}` : startDate;
-            url += `&start_date=${startDateTime}`;
-          }
-          if (endDate) {
-            const endDateTime = endTime ? `${endDate}T${endTime}` : endDate;
-            url += `&end_date=${endDateTime}`;
-          }
+          const url = buildRecordingsUrl(currentChannelId);
 
           const response = await fetch(url);
           if (!response.ok) { throw new Error(`HTTP ${response.status}: ${response.statusText}`); }
@@ -958,8 +944,7 @@ function formatDateTimeForLA(timestamp) {
               const item = document.createElement("div");
               item.className = "recording-item";
 
-              let formattedTime = recording.timestamp || 'Unknown time';
-              try { formattedTime = formatDateTimeForLA(recording.timestamp); } catch (_) {}
+              const formattedTime = formatDateTimeLocal(recording.modified_time);
 
               const duration = recording.duration_ms
                 ? `${(recording.duration_ms / 1000).toFixed(1)}s`
@@ -968,11 +953,12 @@ function formatDateTimeForLA(timestamp) {
               item.innerHTML = `
                 <input type="checkbox" class="recording-checkbox" 
                        data-filename="${recording.filename}"
-                       data-timestamp="${recording.timestamp}" 
+                       data-timestamp="${recording.modified_time}"
                        onchange="updateBatchControls()">
                 <div class="recording-info">
-                  <div class="recording-name">${recording.filename}</div>
-                  <div class="recording-meta">${formattedTime} • ${duration} • ${formatFileSize(recording.size || 0)}</div>
+                  <div class="recording-name">${formattedTime}</div>
+                  <div class="recording-meta">File: ${recording.filename}</div>
+                  <div class="recording-meta">${duration} • ${formatFileSize(recording.size || 0)}</div>
                 </div>
                 <div class="recording-actions">
                   <button class="btn-small btn-primary" onclick="playRecording('${recording.filename}', '${currentChannelName}')">Play</button>
@@ -1008,20 +994,7 @@ function formatDateTimeForLA(timestamp) {
       const container = document.getElementById("modalRecordingsContainer");
       container.innerHTML = '<div class="loading">Filtering recordings...</div>';
 
-      const startDate = document.getElementById("startDate").value;
-      const endDate = document.getElementById("endDate").value;
-      const startTime = document.getElementById("startTime").value;
-      const endTime = document.getElementById("endTime").value;
-
-      let url = `/api/recordings/channel/${currentChannelId}?limit=200`;
-      if (startDate) {
-        const startDateTime = startTime ? `${startDate}T${startTime}` : startDate;
-        url += `&start_date=${startDateTime}`;
-      }
-      if (endDate) {
-        const endDateTime = endTime ? `${endDate}T${endTime}` : endDate;
-        url += `&end_date=${endDateTime}`;
-      }
+      const url = buildRecordingsUrl(currentChannelId);
 
       fetch(url)
         .then(response => {
@@ -1040,8 +1013,7 @@ function formatDateTimeForLA(timestamp) {
               const item = document.createElement("div");
               item.className = "recording-item";
 
-              let formattedTime = recording.timestamp || 'Unknown time';
-              try { formattedTime = formatDateTimeForLA(recording.timestamp); } catch (_) {}
+              const formattedTime = formatDateTimeLocal(recording.modified_time);
 
               const duration = recording.duration_ms
                 ? `${(recording.duration_ms / 1000).toFixed(1)}s`
@@ -1050,11 +1022,12 @@ function formatDateTimeForLA(timestamp) {
               item.innerHTML = `
                 <input type="checkbox" class="recording-checkbox" 
                        data-filename="${recording.filename}"
-                       data-timestamp="${recording.timestamp}" 
+                       data-timestamp="${recording.modified_time}"
                        onchange="updateBatchControls()">
                 <div class="recording-info">
-                  <div class="recording-name">${recording.filename}</div>
-                  <div class="recording-meta">${formattedTime} • ${duration} • ${formatFileSize(recording.size || 0)}</div>
+                  <div class="recording-name">${formattedTime}</div>
+                  <div class="recording-meta">File: ${recording.filename}</div>
+                  <div class="recording-meta">${duration} • ${formatFileSize(recording.size || 0)}</div>
                 </div>
                 <div class="recording-actions">
                   <button class="btn-small btn-primary" onclick="playRecording('${recording.filename}', '${currentChannelName}')">Play</button>
@@ -1267,23 +1240,7 @@ function formatDateTimeForLA(timestamp) {
       const selectedRecordings = Array.from(selectedCheckboxes).map(cb => {
         const filename = cb.getAttribute('data-filename');
         const timestamp = cb.getAttribute('data-timestamp');
-        let parsedDate;
-        try {
-          if (timestamp && timestamp.match(/^\d{8}_\d{6}/)) {
-            const year = timestamp.substring(0, 4);
-            const month = timestamp.substring(4, 6);
-            const day = timestamp.substring(6, 8);
-            const hour = timestamp.substring(9, 11);
-            const minute = timestamp.substring(11, 13);
-            const second = timestamp.substring(13, 15);
-            parsedDate = new Date(year, month - 1, day, hour, minute, second);
-          } else {
-            parsedDate = new Date(timestamp);
-          }
-        } catch (e) {
-          parsedDate = new Date(0);
-        }
-        return { filename, timestamp: parsedDate, rawTimestamp: timestamp };
+        return { filename, timestamp: new Date(timestamp) };
       });
 
       selectedRecordings.sort((a, b) => a.timestamp - b.timestamp);
@@ -1375,23 +1332,7 @@ function formatDateTimeForLA(timestamp) {
       const selectedRecordings = Array.from(selectedCheckboxes).map(cb => {
         const filename = cb.getAttribute('data-filename');
         const timestamp = cb.getAttribute('data-timestamp');
-        let parsedDate;
-        try {
-          if (timestamp && timestamp.match(/^\d{8}_\d{6}/)) {
-            const year = timestamp.substring(0, 4);
-            const month = timestamp.substring(4, 6);
-            const day = timestamp.substring(6, 8);
-            const hour = timestamp.substring(9, 11);
-            const minute = timestamp.substring(11, 13);
-            const second = timestamp.substring(13, 15);
-            parsedDate = new Date(year, month - 1, day, hour, minute, second);
-          } else {
-            parsedDate = new Date(timestamp);
-          }
-        } catch (e) {
-          parsedDate = new Date(0);
-        }
-        return { filename, timestamp: parsedDate, rawTimestamp: timestamp };
+        return { filename, timestamp: new Date(timestamp) };
       });
 
       selectedRecordings.sort((a, b) => a.timestamp - b.timestamp);

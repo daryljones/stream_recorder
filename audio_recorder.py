@@ -21,6 +21,14 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+def parse_utc_datetime(value):
+    """Parse API dates without depending on the server's local timezone."""
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
 class AudioRecorder:
     def __init__(self, config_file="radio_channels.json", output_dir="audio_files"):
         self.config_file = config_file
@@ -195,8 +203,8 @@ class AudioRecorder:
             logger.error(f"Error creating directories: {e}")
 
     def get_timestamp(self):
-        """Generate timestamp for filenames"""
-        return datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+        """Generate UTC timestamp for filenames"""
+        return datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")[:-3]
 
     def save_transmission_ffmpeg(self, source_file, start_ms, end_ms, channel_id, timestamp):
         """Save transmission using ffmpeg for precise extraction"""
@@ -510,7 +518,8 @@ class AudioRecorder:
             if os.path.exists(channel_dir):
                 files = os.listdir(channel_dir)
                 flac_files = [f for f in files if f.endswith('.flac') and not f.startswith('temp_')]
-                flac_files.sort(reverse=True)  # Most recent first
+                # Legacy filenames use server-local time; sort by the actual file time.
+                flac_files.sort(key=lambda name: os.path.getmtime(os.path.join(channel_dir, name)), reverse=True)
 
                 for filename in flac_files[:limit]:
                     filepath = os.path.join(channel_dir, filename)
@@ -550,26 +559,24 @@ class AudioRecorder:
 
         files = os.listdir(channel_dir)
         flac_files = [f for f in files if f.endswith('.flac') and not f.startswith('temp_')]
-        flac_files.sort(reverse=True)  # Most recent first
-
-        # Parse date filters
+        # Normalize filters to UTC; timezone-free API inputs are also treated as UTC.
         start_dt = None
         end_dt = None
         if start_date:
             try:
-                start_dt = datetime.fromisoformat(start_date.replace('T', ' '))
+                start_dt = parse_utc_datetime(start_date)
             except Exception:
                 pass
         if end_date:
             try:
-                end_dt = datetime.fromisoformat(end_date.replace('T', ' '))
+                end_dt = parse_utc_datetime(end_date)
             except Exception:
                 pass
 
         for filename in flac_files:
             filepath = os.path.join(channel_dir, filename)
             stat = os.stat(filepath)
-            modified_time = datetime.fromtimestamp(stat.st_mtime)
+            modified_time = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc)
 
             # Apply date filtering
             if start_dt and modified_time < start_dt:
@@ -583,7 +590,7 @@ class AudioRecorder:
                 'channel_name': self.channels.get(channel_id, {}).get('name', channel_id),
                 'file_size': stat.st_size,
                 'created_time': datetime.fromtimestamp(stat.st_ctime, tz=timezone.utc).isoformat(),
-                'modified_time': modified_time.astimezone(timezone.utc).isoformat(),
+                'modified_time': modified_time.isoformat(),
                 'file_path': filepath
             }
 
@@ -599,7 +606,8 @@ class AudioRecorder:
 
             recordings.append(recording_info)
 
-        # Apply offset and limit
+        # Sort before pagination so legacy and UTC filenames stay in chronological order.
+        recordings.sort(key=lambda recording: recording['modified_time'], reverse=True)
         start_idx = offset
         end_idx = offset + limit
         return recordings[start_idx:end_idx]

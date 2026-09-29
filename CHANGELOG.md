@@ -2,6 +2,14 @@
 
 All notable changes to the Radio Stream Recorder project will be documented in this file.
 
+## [Unreleased]
+
+### Fixed
+- Recording labels and date filters now use the same file time, shown in the browser's local timezone with a timezone abbreviation.
+- Send date filters in UTC and include the full selected end minute; default dates use the browser's local calendar date.
+- Generate new recording filenames in UTC. Existing filenames remain unchanged, with lists and batch playback ordered by file time.
+- Remove server-timezone dependencies from API filters, downloads, cleanup age checks, and the VAD monitor. "Today" counts use the browser's local day while retaining background caching.
+
 ## [1.1.1] - 2025-11-01
 
 **Speed improvements and authentication support**

@@ -115,8 +115,14 @@ Defines radio channels with:
   - **Batch Download**: Concatenate and download multiple recordings as single FLAC file
 - **Real-time Updates**: Use refresh button in modal windows to update recording lists
 - **FLAC Audio Playback**: High-quality lossless audio streaming across all browsers
-- **Accurate Timestamps**: All times displayed in correct local timezone (PDT)
+- **Accurate Timestamps**: Recording labels and filters use your browser's local timezone, including daylight saving time
 - **Progress Feedback**: Visual indicators for processing operations
+
+Recording lists show the approximate file save time in your local timezone (for example, `09/28/2026, 09:37:45 PM PDT`), with the original filename below it. Filtering and batch ordering use that same file time. The browser sends filter boundaries in UTC; the entire selected end minute is included.
+
+The backend uses UTC regardless of the server's configured timezone. API dates without a timezone are interpreted as UTC. The browser also sends its local midnight boundaries for the "Today" count, so each viewer sees their own calendar day, including daylight saving changes. Statistics remain cached; API clients that omit day boundaries get the UTC day's count.
+
+New recording filenames use UTC. Older versions used the server's local clock for filenames, even though file times were returned by the API in UTC. Existing files are not renamed, and their names are not used to determine the displayed time. These times describe when a file was saved, not the exact start of the transmission; copying files without preserving modification times will change the time shown and used for filtering.
 
 ### Audio Quality & Processing
 - **MP3 format**: Optimized for web streaming and storage efficiency

@@ -44,8 +44,10 @@ Returns recordings for a specific channel.
 **Parameters:**
 - `channel_name` (path): Channel identifier
 - `limit` (query): Maximum number of recordings (default: 50)
-- `start_date` (query): Start date filter (YYYY-MM-DD or YYYY-MM-DDTHH:MM)
-- `end_date` (query): End date filter (YYYY-MM-DD or YYYY-MM-DDTHH:MM)
+- `start_date` (query): Inclusive start instant in ISO 8601 format
+- `end_date` (query): Inclusive end instant in ISO 8601 format
+
+Use `Z` or an explicit offset (URL-encode `+` as `%2B`). Dates and times without an offset are interpreted as UTC, independent of the server timezone. The browser converts local filter inputs to UTC before sending them. Filtering uses `modified_time`, which is also the approximate save time shown in the UI; legacy filename timestamps may be server-local and should not be used for timezone conversion.
 
 **Example:**
 ```
@@ -56,11 +58,12 @@ GET /api/recordings/channel/2_-_Sheriff?limit=100&start_date=2025-08-20&end_date
 ```json
 [
   {
-    "filename": "20250826_140500_123_2_-_Sheriff.mp3",
-    "timestamp": "2025-08-26T14:05:00",
-    "duration": 5.2,
-    "size": 125440,
-    "channel": "2_-_Sheriff"
+    "filename": "20250826_140500_123_2_-_Sheriff.flac",
+    "timestamp": "20250826_140500_123",
+    "modified_time": "2025-08-26T14:05:00.123000+00:00",
+    "duration_ms": 5200,
+    "file_size": 125440,
+    "channel_id": "2_-_Sheriff"
   }
 ]
 ```
@@ -91,6 +94,22 @@ Download or stream a specific recording file.
 ---
 
 ### System Status
+
+#### GET /api/stats
+Returns cached recording counts and storage totals for each enabled channel and `total`.
+
+**Optional parameters:**
+- `start_date`: Inclusive start of the viewer's local day, converted to a UTC instant
+- `end_date`: Exclusive start of the next local day, converted to a UTC instant
+
+Supply both boundaries together to calculate the `today` counts for that interval. The browser calculates each midnight separately to handle 23-hour and 25-hour daylight saving days. Other totals are unchanged. With no boundaries, `today` means the current UTC day. Queries use cached file times without rescanning recordings or changing another viewer's counts.
+
+**Status Codes:**
+- 200: Success
+- 400: Invalid, incomplete, or reversed day boundaries
+- 503: Statistics cache is warming up
+
+---
 
 #### GET /api/status
 Returns current system status and statistics.

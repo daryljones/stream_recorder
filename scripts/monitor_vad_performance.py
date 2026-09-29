@@ -7,7 +7,7 @@ Monitors recording behavior with per-channel VAD settings
 import json
 import os
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timezone
 import subprocess
 
 def load_channels():
@@ -18,8 +18,8 @@ def load_channels():
 
 def get_recent_recordings(minutes=30):
     """Get recordings from the last N minutes"""
-    cutoff_time = datetime.now() - timedelta(minutes=minutes)
-    cutoff_timestamp = cutoff_time.strftime("%Y%m%d_%H%M%S")
+    current_time = time.time()
+    cutoff_time = current_time - minutes * 60
     
     recordings = {}
     
@@ -34,11 +34,12 @@ def get_recent_recordings(minutes=30):
             if not file.endswith('.flac'):
                 continue
                 
-            # Extract timestamp from filename
+            # File times are absolute; legacy filenames may use server-local time.
             try:
-                timestamp_part = file.split('_')[0] + '_' + file.split('_')[1]
-                if timestamp_part >= cutoff_timestamp:
-                    file_path = os.path.join(channel_path, file)
+                file_path = os.path.join(channel_path, file)
+                modified_time = os.path.getmtime(file_path)
+                if cutoff_time <= modified_time <= current_time:
+                    timestamp_part = datetime.fromtimestamp(modified_time, tz=timezone.utc).strftime("%Y%m%d_%H%M%S")
                     
                     # Get file duration
                     try:
